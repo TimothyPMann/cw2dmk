@@ -132,6 +132,7 @@ int curenc;
 int uencoding = MIXED;
 int reverse = 0;
 int accum_sectors = 0;
+int expected_sectors = -1;
 int menu_err_enabled = 0;
 volatile int menu_intr_enabled = 0;
 volatile int menu_requested = 0;
@@ -376,7 +377,12 @@ dmk_write(void)
   if (accum_sectors)
     good_sectors += reused_sectors;
 
-  msg(OUT_TSUMMARY, " %d good sector%s", good_sectors, plu(good_sectors));
+  if (expected_sectors >= 0) {
+    msg(OUT_TSUMMARY, " %d sector%s expected, %d good",
+        expected_sectors, plu(expected_sectors), good_sectors);
+  } else {
+    msg(OUT_TSUMMARY, " %d good sector%s", good_sectors, plu(good_sectors));
+  }
   if (accum_sectors && reused_sectors > 0)
     msg(OUT_TSUMMARY, " (%d reused)", reused_sectors);
   msg(OUT_TSUMMARY, ", %d error%s\n", errcount, plu(errcount));
@@ -384,7 +390,7 @@ dmk_write(void)
 
   total_good_sectors += good_sectors;
   total_errcount += errcount;
-  if (errcount) {
+  if (errcount || good_sectors < expected_sectors) {
     err_tracks++;
   } else if (good_sectors > 0) {
     good_tracks++;
@@ -1528,6 +1534,7 @@ void usage(void)
   printf(" -m steps      Step multiplier, 1 or 2\n");
   printf(" -t tracks     Number of tracks per side\n");
   printf(" -s sides      Number of sides\n");
+  printf(" -S sectors    Number of sectors expected per track\n");
   printf(" -e encoding   1 = FM (SD), 2 = MFM (DD or HD), 3 = RX02\n");
   printf(" -w fmtimes    Write FM bytes 1 or 2 times [%d]\n", fmtimes);
   printf("\n Special options for hard to read diskettes\n");
@@ -1718,7 +1725,7 @@ main(int argc, char** argv)
   opterr = 0;
   for (;;) {
     ch = getopt(argc, argv,
-		"p:d:v:u:k:m:t:s:e:w:x:a:o:h:g:i:z:r:q:c:1:2:f:l:jM:C:R:X");
+		"p:d:v:u:k:m:t:s:S:e:w:x:a:o:h:g:i:z:r:q:c:1:2:f:l:jM:C:R:X");
     if (ch == -1) break;
     switch (ch) {
     case 'p':
@@ -1763,6 +1770,10 @@ main(int argc, char** argv)
     case 's':
       sides = strtol(optarg, NULL, 0);
       if (sides < 1 || sides > 2) usage();
+      break;
+    case 'S':
+      expected_sectors = strtol(optarg, NULL, 0);
+      if (expected_sectors <= 0) usage();
       break;
     case 'e':
       uencoding = strtol(optarg, NULL, 0);
@@ -2363,6 +2374,7 @@ main(int argc, char** argv)
 	}
 
 	failing = ((accum_sectors ? merged_stat.errcount : errcount) > 0 ||
+                   good_sectors + reused_sectors < expected_sectors ||
                    force_retry) &&
           (retry < retries[track]);
 
@@ -2395,6 +2407,7 @@ main(int argc, char** argv)
 	  menu_requested = 0;
 	}
       } while (failing && ++retry);
+
       total_retries += retry;
       fflush(stdout);
       if (out_file) fflush(out_file);

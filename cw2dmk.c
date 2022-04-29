@@ -64,9 +64,10 @@ FILE *dmk_file;
 #define FM 1
 #define MFM 2
 #define RX02 3
+#define MMFM 4
 #define MIXED 0
-#define N_ENCS 4
-char *enc_name[] = { "autodetect", "FM", "MFM", "RX02" };
+#define N_ENCS 5
+char *enc_name[] = { "autodetect", "FM", "MFM", "RX02", "MMFM" };
 int enc_count[N_ENCS];
 int enc_sec[DMK_TKHDR_SIZE / 2];
 int total_enc_count[N_ENCS];
@@ -105,6 +106,7 @@ int cwclock = -1;
 int fmthresh = -1;
 int mfmthresh1 = -1;
 int mfmthresh2 = -1;
+int mmfmthresh3 = -1;
 int dmktracklen = -1;
 float mfmshort = -1.0;
 float postcomp = 0.5;
@@ -157,8 +159,9 @@ char* plu(int val)
 #define OUT_ERRORS 3
 #define OUT_IDS 4
 #define OUT_HEX 5
-#define OUT_RAW 6
+#define OUT_HISTOGRAM 6
 #define OUT_SAMPLES 7
+#define OUT_RAW 8 //XXX nuke this? either way need to change man page
 int out_level = OUT_TSUMMARY;
 int out_file_level = OUT_QUIET;
 char *out_file_name;
@@ -880,7 +883,7 @@ void
 process_bit(int bit)
 {
   static int curcyl = 0;
-  unsigned char val = 0;
+  unsigned char val = 0, clk = 0;
   int i;
 
   accum = (accum << 1) + bit;
@@ -913,7 +916,8 @@ process_bit(int bit)
    * another 2x for the double sampling rate).  We must not look
    * inside a region that can contain standard MFM data.
    */
-  if (uencoding != MFM && bits >= 36 && !write_splice &&
+  if ((uencoding == FM || uencoding == RX02 || uencoding == MIXED) &&
+      bits >= 36 && !write_splice &&
       (curenc != MFM || (ibyte == -1 && dbyte == -1 && ebyte == -1 &&
                          mark_after == -1))) {
     switch (accum & 0xfffffffffULL) {
@@ -953,9 +957,9 @@ process_bit(int bit)
    * For MFM premarks, we look at 16 data bits (two copies of the
    * premark), which ends up being 32 bits of accum (2x for clocks).
    */
-  if (uencoding != FM && uencoding != RX02 &&
+  if ((uencoding == MFM || uencoding == MIXED) &&
       bits >= 32 && !write_splice) {
-    switch (accum & 0xffffffff) {
+    switch (accum & 0xfffffff) {
     case 0x52245224:
       /* Pre-index mark, 0xc2c2 with missing clock between bits 3 & 4
 	 (using 0-origin big-endian counting!).  Would be 0x52a452a4
@@ -1023,6 +1027,22 @@ process_bit(int bit)
     }
   }
 
+  if (uencoding == MMFM &&
+      bits >= 32 && !write_splice) {
+    // XXX I don't know much about MMFM yet, so this is experimental crap...
+    static int once;
+    switch (accum & 0xffffffff) {
+    case 0x88888888:
+      /* Maybe 00 00, hopefully in gap. Blindly force byte-align once. */
+      if (!once && bits < 64 && bits > 48) {
+        msg(OUT_HEX, "(-%d)", bits-48);
+        bits = 48;
+        once = 1;
+      }
+      break;
+    }
+  }
+
   /* Undo RX02 DEC-modified MFM transform (in taccum) */
 #if WINDOW == 4
   if (bits >= WINDOW && (bits & 1) == 0 && (accum & 0xfULL) == 0x8ULL) {
@@ -1077,18 +1097,21 @@ process_bit(int bit)
     }
     for (i=0; i<8; i++) {
       val |= (accum & (1ULL << (4*i + 1 + 32))) >> (3*i + 1 + 32);
+      clk |= (accum & (1ULL << (4*i + 3 + 32))) >> (3*i + 3 + 32);
     }
     bits = 32;
 
-  } else if (curenc == MFM) {
+  } else if (curenc == MFM || curenc == MMFM) {
     for (i=0; i<8; i++) {
       val |= (accum & (1ULL << (2*i + 48))) >> (i + 48);
+      clk |= (accum & (1ULL << (2*i + 49))) >> (i + 49);
     }
     bits = 48;
 
-  } else /* curenc == RX02 */ {
+  } else if (curenc == RX02) {
     for (i=0; i<8; i++) {
       val |= (taccum & (1ULL << (2*i + 48))) >> (i + 48);
+      clk |= (taccum & (1ULL << (2*i + 49))) >> (i + 49);
     }
     bits = 48;
   }
@@ -1209,12 +1232,12 @@ process_bit(int bit)
     break;
   }
 
-  if (ibyte == 2) {
-    msg(OUT_ERRORS, "%02x ", val);
-  } else if (ibyte >= 0 && ibyte <= 3) {
-    msg(OUT_IDS, "%02x ", val);
+  if (ibyte >= 0 && ibyte <= 3) {
+    msg(OUT_HISTOGRAM, "(%02x)", clk);
+    msg(ibyte == 2 ? OUT_ERRORS : OUT_IDS, "%02x ", val);
   } else {
     msg(OUT_SAMPLES, "<");
+    msg(OUT_HISTOGRAM, "(%02x)", clk);
     msg(OUT_HEX, "%02x", val);
     msg(OUT_SAMPLES, ">");
     msg(OUT_HEX, " ");
@@ -1320,15 +1343,17 @@ process_sample(int sample)
     } else if (sample + adj <= mfmthresh2) {
       /* Medium */
       len = 3;
-    } else {
+    } else if (uencoding != MMFM || sample + adj <= mmfmthresh3) {
       /* Long */
       len = 4;
+    } else {
+      len = 5;
     }
 
   }
   adj = (sample - (len/2.0 * mfmshort * cwclock)) * postcomp;
 
-  msg(OUT_SAMPLES, "%c ", "--sml"[len]);
+  msg(OUT_SAMPLES, "%c ", "--smlx"[len]);
 
   if (!dmk_full) {
     process_bit(1);
@@ -1386,6 +1411,7 @@ set_kind(void)
   fmthresh = kd->fmthresh;
   mfmthresh1 = kd->mfmthresh1;
   mfmthresh2 = kd->mfmthresh2;
+  mmfmthresh3 = kd->mmfmthresh3;
   dmktracklen = kd->cwtracklen;
   mfmshort = kd->mfmshort;
 }
@@ -1779,7 +1805,7 @@ main(int argc, char** argv)
   opterr = 0;
   for (;;) {
     ch = getopt(argc, argv,
-		"p:d:v:u:k:m:t:s:e:w:x:a:o:h:g:i:z:r:q:c:1:2:f:l:jM:C:R:X:");
+		"p:d:v:u:k:m:t:s:e:w:x:a:o:h:g:i:z:r:q:c:1:2:3:f:l:jM:C:R:X:");
     if (ch == -1) break;
     switch (ch) {
     case 'p':
@@ -1826,7 +1852,7 @@ main(int argc, char** argv)
       break;
     case 'e':
       uencoding = strtol(optarg, NULL, 0);
-      if (uencoding < FM || uencoding > RX02) usage();
+      if (uencoding < FM || uencoding >= N_ENCS) usage();
       break;
     case 'w':
       fmtimes = strtol(optarg, NULL, 0);
@@ -1885,6 +1911,10 @@ main(int argc, char** argv)
       break;
     case '2':
       mfmthresh2 = strtol(optarg, NULL, 0);
+      if (kind == -1) usage();
+      break;
+    case '3':
+      mmfmthresh3 = strtol(optarg, NULL, 0);
       if (kind == -1) usage();
       break;
     case 'f':
@@ -2170,6 +2200,8 @@ main(int argc, char** argv)
 
       /* Loop over retries */
       do {
+	int histogram[128], i;
+
        try_start:
         if (replay) {
           /* Get track to replay */
@@ -2243,10 +2275,10 @@ main(int argc, char** argv)
 	    track, side, retry + 1);
 	fflush(stdout);
 
-#if DEBUG3
-	int histogram[128], i;
-	for (i=0; i<128; i++) histogram[i] = 0;
-#endif
+        if (out_level >= OUT_HISTOGRAM) {
+          for (i=0; i<128; i++) histogram[i] = 0;
+        }
+
 	dmk_init_track();
 	init_decoder();
 
@@ -2281,9 +2313,9 @@ main(int argc, char** argv)
 	  }
 	  oldb = b;
 	  b &= 0x7f;
-#if DEBUG3
-	  histogram[b]++;
-#endif
+          if (out_level >= OUT_HISTOGRAM) {
+            histogram[b]++;
+          }
 
 	  /* Process this sample */
 	  process_sample(b);
@@ -2292,16 +2324,19 @@ main(int argc, char** argv)
 	/*
 	 * All samples read; finish up this (re)try.
 	 */
-#if DEBUG3
-	/* Print histogram for debugging */
-	for (i=0; i<128; i+=8) {
-	  printf("%3d: %06d %06d %06d %06d %06d %06d %06d %06d\n", i,
-		 histogram[i+0], histogram[i+1], histogram[i+2],
-		 histogram[i+3], histogram[i+4], histogram[i+5],
-		 histogram[i+6], histogram[i+7]);
-	}
-#endif
-	flush_bits();
+        flush_bits();
+
+        if (out_level >= OUT_HISTOGRAM) {
+          /* Print histogram for debugging */
+          printf("\n");
+          for (i=0; i<128; i+=8) {
+            printf("%3d: %06d %06d %06d %06d %06d %06d %06d %06d\n", i,
+                   histogram[i+0], histogram[i+1], histogram[i+2],
+                   histogram[i+3], histogram[i+4], histogram[i+5],
+                   histogram[i+6], histogram[i+7]);
+          }
+        }
+
 	check_missing_dam();
 	if (ibyte != -1) {
 	  /* Ignore incomplete sector IDs; assume they are wraparound */

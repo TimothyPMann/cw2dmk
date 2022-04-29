@@ -4,6 +4,7 @@ typedef struct {
   int fmthresh;   /* <= this value: short */
   int mfmthresh1; /* <= this value: short */
   int mfmthresh2; /* <= this value: short or medium */
+  int mmfmthresh3; /* <= this value: short or medium or long */
   int dmktracklen;/* conventional DMK track length for this kind */
   int cwtracklen; /* longer DMK track length for this kind, for cw reads */
   float mfmshort; /* nominal MFM short assuming 1x clock multiplier */
@@ -14,24 +15,24 @@ typedef struct {
 /* Note: kind numbers are used in usage message and on command line */
 #define NKINDS 4
 kind_desc kinds[NKINDS] = {
- 
+
   /* 360 RPM, MFM data 300 kHz */
   { "5.25\" SD/DD disk in 1.2MB drive",
-    2 /*14.161MHz*/, 70, 56, 79,
+    2 /*14.161MHz*/, 70, 56, 79, 100,
     DMK_TRACKLEN_5, CW_TRACKLEN_5, 23.600, 0, 167 },
 
   /* 300 RPM, MFM data 250 kHz */
   { "5.25\" SD/DD disk in 360KB/720KB drive, or 3.5\" SD/DD disk",
-    2 /*14.161MHz*/, 84, 70, 92,
+    2 /*14.161MHz*/, 84, 70, 92, 120,
     DMK_TRACKLEN_5, CW_TRACKLEN_5, 28.322, 0, 200 },
 
   /* 360 RPM, MFM data 500 kHz */
   { "5.25\" HD disk, or 8\" SD/DD disk",
-    2 /*14.161MHz*/, 42, 35, 46,
+    2 /*14.161MHz*/, 42, 35, 46, 60,
     DMK_TRACKLEN_8, CW_TRACKLEN_8, 14.161, 1, 167 },
 
   /* 300 RPM, MFM data 500 kHz */
-  { "3.5\" HD disk", 
-    2 /*14.161MHz*/, 42, 35, 46,
+  { "3.5\" HD disk",
+    2 /*14.161MHz*/, 42, 35, 46, 60,
     DMK_TRACKLEN_3HD, CW_TRACKLEN_3HD, 14.161, 1, 200 },
 };

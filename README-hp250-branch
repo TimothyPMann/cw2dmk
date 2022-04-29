@@ -1,0 +1,24 @@
+This is some extremely unbaked hackery at trying to decode hp250 (7902A/9895K) disks.
+All I have to work with is a partial -v7 capture of one disk from Rüdiger Kurth and
+an hp250 service handbook he sent me.  The handbook doesn't say the disks are MMFM,
+but it appears that way, as a histogram has *4* peaks rather than just 3, with the
+4th being a bit weak.
+PDF page 450 of the handbook has some physical disk format info, but doesn't say
+what the address marks look like (data bits or modified clock bits).
+
+OUT_RAW has been moved from 6 to 8, but it won't work right there because
+output from level 7 will pollute it.  Maybe OUT_RAW should go away.
+
+OUT_HISTOGRAM is new, and is now 6.  This shows a histogram for every track.
+This feature could be mainstreamed.  It would be nice to merge with
+do_histogram, to include and log its peak finder.  Peak finder should look
+for up to 4 peaks for MMFM; currently it still only looks for 3.
+
+There is no address mark detection or valid mmfm clock pattern checking so far.
+One totally bogus hack tries to align the start of the first track by assuming
+the data is 00 with normal clocking.
+
+OUT_HISTOGRAM also outputs the clock pattern for each decoded data byte,
+preceding it in parentheses.  Something like this could be useful to mainstream,
+maybe.  Or maybe logging the clock and data bits still interleaved would be
+better.

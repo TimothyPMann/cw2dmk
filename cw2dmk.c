@@ -861,16 +861,8 @@ int
 mmfm_valid_clock(unsigned long long accum)
 {
   /* Check for valid clock bits */
+  unsigned int xclock = ~((accum >> 2) | (accum >> 1) | (accum << 1)) & 0xaaaa;
   unsigned int clock = accum & 0xaaaa;
-  unsigned int xclock = 0;
-  int i;
-  for (i = 0; i < 8; i++) {
-    if (!(accum & (1 << (2*i+3))) &&
-        !(accum & (1 << (2*i+2))) &&
-        !(accum & (1 << (2*i)))) {
-      xclock |= (1 << (2*i+1));
-    }
-  }
   if (xclock != clock) {
     //msg(OUT_ERRORS, "[clock exp %04x got %04x]", xclock, clock);
     return 0;

@@ -1076,6 +1076,7 @@ process_bit(int bit)
       break;
     case 0x88885555:
     case 0x22225555:
+      //XXX This still doesn't always fire when it ought to.  Why?
       if (mark_after < 0 && ibyte == -1 && dbyte == -1 &&
           (bits & 15) != 0) {
 	/* 00 ff in gap, probably the boundary of 00 ff in the sync-up

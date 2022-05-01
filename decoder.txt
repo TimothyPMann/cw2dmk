@@ -505,7 +505,7 @@ clock: 0 0 0 0 0 0 0 0 0 1 x 1 0 0 0 0
        ---5---5---5---5---2---a---4---5
 
 Long run of 0x00 with normal clock pattern.
-Two possibilities depending on boundary conditition.
+Two possibilities depending on boundary condition.
 
           0-----< 0-----< 0-----< 0-----<
 data:   0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
@@ -520,7 +520,7 @@ clock: 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1
          ---2---2---2---2---2---2---2---2
 
 Sync-up bytes transitioning from 0x00 to 0xff, normal clock pattern.
-Two possibilities depending on boundary conditition.
+Two possibilities depending on boundary condition.
 
           0-----< 0-----< f-----< f-----<
 data:   0 0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1
@@ -537,6 +537,6 @@ clock: 1 0 1 0 1 0 1 0 1 0 0 0 0 0 0 0 0
 Intel MMFM
 ----------
 
-Not started.  Similar in some way to HP MMFM, different in others.
+Not started.  Similar in some ways to HP MMFM, different in others.
 The basic MMFM encoding is the same, but different marks are used,
 bit order is big-endian, CRC is initialized to 0xffff, etc.

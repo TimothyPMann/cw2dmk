@@ -17,12 +17,16 @@ looks for 3.
 As a drawback, adding OUT_HISTOGRAM bumped up the other output formats
 by 1, so in particular OUT_SAMPLES becomes 8.  That's not great for
 users who are used to the old numbering.  Maybe OUT_HISTOGRAM
+should go away again and the histogram should be shown in OUT_HEX and
+above, or maybe only OUT_SAMPLES.
 
 OUT_SAMPLES now also outputs the clock pattern for each decoded data
 byte, preceding it and separated by a "/".  Something like this could
 be useful to mainstream, maybe.  Or maybe logging the clock and data
 bits still interleaved would be better.  Or maybe removing it would be
-better!
+better!  Or move to an OUT_DEBUG that is beyond OUT_SAMPLES.
 
 XXX Haven't tested yet that parselog can still parse the log.
 
+XXX The DMK file isn't really useful yet.  Need to flag the new
+encoding in the header.  Need to add support to dmk2cw to write MMFM!

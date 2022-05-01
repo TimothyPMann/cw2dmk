@@ -68,34 +68,65 @@ unsigned short calc_crc(unsigned short crc,
   return crc;
 }
 
+/* Bitswap a byte */
+int
+bitswap(int byte)
+{
+  int i, res = 0;
+  for (i=0; i<=7; i++) {
+    if (byte & (1 << i)) {
+      res |= 1 << (7-i);
+    }
+  }
+  return res;
+}
+
+/* Recompute the CRC with len bytes bitswapped and appended */
+unsigned short calc_crc_bs(unsigned short crc,
+                           unsigned char const *buf, int len)
+{
+  while (len--) {
+    crc = calc_crc1(crc, bitswap(*buf++));
+  }
+  return crc;
+}
+
 #if TEST
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 /*
- * crc app.  Usage: crc [initial_value].  If the initial_value is
+ * crc app.  Usage: crc [initial_value [bs]].  If the initial_value is
  * omitted, it defaults to 0xffff.  crc reads hex bytes, optionally
  * separated by whitespace, from stdin until end of file.  It computes
- * the crc of the byte sequence and outputs it in hex on stdout.
+ * the crc of the byte sequence and outputs it in hex on stdout.  If "bs"
+ * is given, bitswap each byte before feeding it in, and output the result
+ * both normally and with each byte bitswapped.
  */
 int
 main(int argc, char **argv)
 {
   unsigned char buf[2048];
-  int count, c, res;
-  unsigned short preset;
+  int count, c, res, bs;
+  unsigned short preset, crc;
 
   if (argc > 1) {
     preset = strtol(argv[1], NULL, 0);
   } else {
     preset = 0xffff;
   }
+  bs = argc > 2 && strcmp(argv[2], "bs") == 0;
   count = 0;
   for (;;) {
     res = scanf("%2x", &c);
     if (res != 1) break;
     buf[count++] = c;
   }
-  printf("\n%04x\n", calc_crc(preset, buf, count));
+  crc = bs ? calc_crc_bs(preset, buf, count) : calc_crc(preset, buf, count);
+  printf("\n%04x\n", crc);
+  if (bs) {
+    printf("%02x%02x\n", bitswap(crc >> 8), bitswap(crc));
+  }
   return 0;
 }
 #endif

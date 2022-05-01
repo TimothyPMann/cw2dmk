@@ -64,10 +64,10 @@ FILE *dmk_file;
 #define FM 1
 #define MFM 2
 #define RX02 3
-#define MMFM 4
+#define HP_MMFM 4
 #define MIXED 0
 #define N_ENCS 5
-char *enc_name[] = { "autodetect", "FM", "MFM", "RX02", "MMFM" };
+char *enc_name[] = { "autodetect", "FM", "MFM", "RX02", "HP_MMFM" };
 int enc_count[N_ENCS];
 int enc_sec[DMK_TKHDR_SIZE / 2];
 int total_enc_count[N_ENCS];
@@ -80,7 +80,7 @@ int total_enc_count[N_ENCS];
    drive.  However, many drives can't step that far. */
 #define TRACKS_GUESS MAX_TRACKS
 
-/* Suppress FM address mark detection for a few bit times after each
+/* Suppress address mark detection for a few bit times after each
    data CRC is seen.  Helps prevent seeing bogus marks in write
    splices. */
 #define WRITE_SPLICE 32
@@ -159,9 +159,11 @@ char* plu(int val)
 #define OUT_ERRORS 3
 #define OUT_IDS 4
 #define OUT_HEX 5
-#define OUT_HISTOGRAM 6
-#define OUT_SAMPLES 7
-#define OUT_RAW 8 //XXX nuke this? either way need to change man page
+#define OUT_RAW 6
+#define OUT_HISTOGRAM 7
+#define OUT_SAMPLES 8 // XXX ugh, changing this value is not user friendly.
+                      // maybe later remove OUT_HISTOGRAM again and put
+                      // the histogram starting in OUT_HEX or OUT_SAMPLES.
 int out_level = OUT_TSUMMARY;
 int out_file_level = OUT_QUIET;
 char *out_file_name;
@@ -855,6 +857,26 @@ mfm_valid_clock(unsigned long long accum)
   return 1;
 }
 
+int
+mmfm_valid_clock(unsigned long long accum)
+{
+  /* Check for valid clock bits */
+  unsigned int clock = accum & 0xaaaa;
+  unsigned int xclock = 0;
+  int i;
+  for (i = 0; i < 8; i++) {
+    if (!(accum & (1 << (2*i+3))) &&
+        !(accum & (1 << (2*i+2))) &&
+        !(accum & (1 << (2*i)))) {
+      xclock |= (1 << (2*i+1));
+    }
+  }
+  if (xclock != clock) {
+    //msg(OUT_ERRORS, "[clock exp %04x got %04x]", xclock, clock);
+    return 0;
+  }
+  return 1;
+}
 
 /* Window used to undo RX02 MFM transform */
 #if 1
@@ -1027,17 +1049,41 @@ process_bit(int bit)
     }
   }
 
-  if (uencoding == MMFM &&
+  if (uencoding == HP_MMFM &&
       bits >= 32 && !write_splice) {
-    // XXX I don't know much about MMFM yet, so this is experimental crap...
-    static int once;
+    //msg(OUT_HEX, "[accum %016lx bits %d]", accum, bits); //XXX
     switch (accum & 0xffffffff) {
+    case 0x55552a54: // ID address mark
+    case 0x55552a55: // defective track address mark
+    case 0x55552a44: // data address mark
+    case 0x55552a45: // ECC data address mark
+      if (bits < 64 && bits > 48) {
+	msg(OUT_HEX, "(+%d)", 64-bits);
+	bits = 64; /* byte-align by repeating some bits */
+      }
+      mark_after = 48;
+      break;
     case 0x88888888:
-      /* Maybe 00 00, hopefully in gap. Blindly force byte-align once. */
-      if (!once && bits < 64 && bits > 48) {
-        msg(OUT_HEX, "(-%d)", bits-48);
-        bits = 48;
-        once = 1;
+    case 0x22222222:
+      if (mark_after < 0 && ibyte == -1 && dbyte == -1 &&
+          (bits & 1) != 0) {
+	/* 00 00 in gap, apparently misaligned.  Drop bits to align.
+           This heuristic is just cosmetic, to make the gaps look
+           nicer, so it can be removed if it causes problems. */
+        msg(OUT_HEX, "(-%d)", bits & 1);
+	bits -= (bits & 1);
+      }
+      break;
+    case 0x88885555:
+    case 0x22225555:
+      if (mark_after < 0 && ibyte == -1 && dbyte == -1 &&
+          (bits & 15) != 0) {
+	/* 00 ff in gap, probably the boundary of 00 ff in the sync-up
+           bytes, apparently misaligned.  Drop bits to align.  This
+           heuristic is just cosmetic, to make the gaps look nicer, so
+           it can be removed if it causes problems. */
+        msg(OUT_HEX, "(-%d)", bits & 15);
+	bits -= (bits & 15);
       }
       break;
     }
@@ -1101,7 +1147,7 @@ process_bit(int bit)
     }
     bits = 32;
 
-  } else if (curenc == MFM || curenc == MMFM) {
+  } else if (curenc == MFM) {
     for (i=0; i<8; i++) {
       val |= (accum & (1ULL << (2*i + 48))) >> (i + 48);
       clk |= (accum & (1ULL << (2*i + 49))) >> (i + 49);
@@ -1112,6 +1158,28 @@ process_bit(int bit)
     for (i=0; i<8; i++) {
       val |= (taccum & (1ULL << (2*i + 48))) >> (i + 48);
       clk |= (taccum & (1ULL << (2*i + 49))) >> (i + 49);
+    }
+    bits = 48;
+
+  } else if (curenc == HP_MMFM) {
+    for (i=0; i<8; i++) {
+      val |= ((accum & (1ULL << (2*i + 48))) != 0) << (7 - i);
+      clk |= ((accum & (1ULL << (2*i + 49))) != 0) << (7 - i);
+      /*
+       * XXX Ugh, this can't check the leftmost clock bit, because the
+       * clock bit and data bit immediately preceding it are already
+       * gone.  That's an issue for MFM as well (though it only needs
+       * the preceding data bit), which is why mfm_valid_clock is only
+       * used in predetection.  As a quick hack, let's check the 8
+       * oldest clock bits that we still can check, which are the bits
+       * *after* the ones in this data byte, not before.  Think about
+       * doing better for both MFM and HP_MMFM in the future.  Maybe
+       * decode not from bits 63-47 in the shift register, but 61-45
+       * instead, so there are two bits of history to look at here.
+       */
+    }
+    if (!mmfm_valid_clock(accum >> 46)) {
+      msg(OUT_HEX, "?");
     }
     bits = 48;
   }
@@ -1130,21 +1198,33 @@ process_bit(int bit)
       ebyte = -1;
       return;
 
-    case 0xfe:
-      /* ID address mark */
+    case 0x70: /* HP MMFM ID address mark */
+      if (curenc != HP_MMFM) break;
+      /* fall through */
+    case 0xfe: /* Standard ID address mark */
       if (curenc == MFM && premark != 0xa1) break;
       if (dmk_awaiting_iam) break;
       check_missing_dam();
-      msg(OUT_IDS, "\n#fe ");
-      dmk_idam(0xfe, curenc);
-      /* For normal MFM, premark a1a1a1 is included in the ID CRC.
-       * With QUIRK_ID_CRC, it is omitted. */
-      crc = calc_crc1((curenc == MFM && (quirk & QUIRK_ID_CRC) == 0) ?
-                      0xcdb4 : 0xffff, val);
+      msg(OUT_IDS, "\n#%02x ", val);
+      dmk_idam(val, curenc);
+      if (curenc == HP_MMFM) {
+        /* HP MMFM omits the address mark from the CRC */
+        crc = 0xffff;
+      } else {
+        /* For MFM, premark a1a1a1 is included in the data CRC.
+         * With QUIRK_DATA_CRC, it is omitted. */
+        crc = calc_crc1((curenc == MFM && (quirk & QUIRK_ID_CRC) == 0) ?
+                        0xcdb4 : 0xffff, val);
+
+      }
       dbyte = -1;
       ebyte = -1;
       return;
 
+    case 0x50: /* HP MMFM data address mark */
+      if (curenc != HP_MMFM) break;
+      sizecode = 1;
+      /* fall through */
     case 0xf8: /* Standard deleted data address mark */
     case 0xf9: /* WD1771 user or RX02 deleted data address mark */
     case 0xfa: /* WD1771 user data address mark */
@@ -1167,10 +1247,15 @@ process_bit(int bit)
 			    uencoding == RX02)))) {
 	change_enc(RX02);
       }
-      /* For MFM, premark a1a1a1 is included in the data CRC.
-       * With QUIRK_DATA_CRC, it is omitted. */
-      crc = calc_crc1((curenc == MFM && (quirk & QUIRK_DATA_CRC) == 0) ?
-                      0xcdb4 : 0xffff, val);
+      if (curenc == HP_MMFM) {
+        /* HP MMFM omits the address mark from the CRC */
+        crc = 0xffff;
+      } else {
+        /* For MFM, premark a1a1a1 is included in the data CRC.
+         * With QUIRK_DATA_CRC, it is omitted. */
+        crc = calc_crc1((curenc == MFM && (quirk & QUIRK_DATA_CRC) == 0) ?
+                        0xcdb4 : 0xffff, val);
+      }
       ibyte = -1;
       dbyte = secsize(sizecode, curenc) + 2;
       ebyte = -1;
@@ -1182,19 +1267,35 @@ process_bit(int bit)
       msg(OUT_ERRORS, "[backward AM] ");
       break;
 
+    case 0xf0: /* HP MMFM defective track address mark */
+      // XXX what to do with this?
+      msg(OUT_ERRORS, "[DTAM] ");
+      break;
+
+    case 0xd0: /* HP MMFM ECC data address mark */
+      // XXX what to do with this?
+      msg(OUT_ERRORS, "[ECCDAM] ");
+      break;
+
     default:
-      /* Premark with no mark */
-      msg(OUT_ERRORS, "[dangling premark] ");
+      if (curenc == MFM) {
+        /* MFM: Premark with no mark */
+        msg(OUT_ERRORS, "[dangling premark] ");
+      } else {
+        /* others: should not be possible; bug */
+        msg(OUT_ERRORS, "[XXX BUG] ");
+      }
       dmk_data(val, curenc);
       // probably wraparound or write splice, so don't inc errcount
       break;
     }
   }
 
-  switch (ibyte) {
+  switch (ibyte + (curenc == HP_MMFM ? 100 : 0)) {
   default:
     break;
   case 0:
+  case 100:
     msg(OUT_IDS, "cyl=");
     curcyl = val;
     break;
@@ -1202,6 +1303,7 @@ process_bit(int bit)
     msg(OUT_IDS, "side=");
     break;
   case 2:
+  case 101:
     msg(OUT_IDS, "sec=");
     break;
   case 3:
@@ -1209,9 +1311,11 @@ process_bit(int bit)
     sizecode = val;
     break;
   case 4:
+  case 102:
     msg(OUT_HEX, "crc=");
     break;
   case 6:
+  case 104:
     if (crc == 0) {
       msg(OUT_IDS, "[good ID CRC] ");
       dmk_valid_id = 1;
@@ -1226,18 +1330,49 @@ process_bit(int bit)
     dmk_awaiting_dam = 1;
     dmk_check_wraparound();
     break;
+#if 0
   case 18:
+  case 123:
+#else
+    // XXX Try allowing predetect to start sooner...? maybe good.
+    // XXX Mustn't start too soon or it might damage bytes in the ID.
+  case 10:
+  case 108:
+#endif
     /* Done with post-ID gap */
+    /*
+     * XXX Why are we keeping ibyte != -1 for a few more bytes in the
+     * gap beyond the end of the ID block?  The only effect seems to
+     * be to suppress recognizing address marks there (via explicit
+     * tests for ibyte != -1).  That suppression might be good, in
+     * case a write splice there looks like an address mark.  Are we
+     * suppressing for long enough to cover the write splice, though?
+     * The 1791 data sheet says that 11 bytes (FM) or 22 bytes (MFM)
+     * after the 6-byte ID block are skipped before write gate is
+     * turned on.  So waiting for byte 17 or (safer) 18 should avoid
+     * the splice for FM, but it's not enough for MFM.  (XXX Should
+     * probably fix that on main.)  For HP_MMFM, it looks like we
+     * should wait at least 17 more bytes after the 4-byte ID block:
+     * there is one 00 byte that is notionally part of the ID block,
+     * then 16 bytes 00 bytes as "gap 1", and then the "sync-up bytes"
+     * 00 00 00 00 ff ff ff ff.  It seems like all 8 sync-up bytes are
+     * be rewritten, so the write splice starts there.  NOTE: Since we
+     * are PRE-detecting address marks and also things like alignment
+     * within gaps, if we want to suppress recognition at all, we
+     * should be careful not to suppress too far, as we want to allow
+     * a realign-in-gap as soon as we pass the splice.  So we have to
+     * subtract some for the size of the predetection shift register.
+     */
     ibyte = -1;
     break;
   }
 
-  if (ibyte >= 0 && ibyte <= 3) {
-    msg(OUT_HISTOGRAM, "(%02x)", clk);
+  if (ibyte >= 0 && ibyte <= (curenc == HP_MMFM ? 1 : 3)) {
+    msg(OUT_SAMPLES, "%02x/", clk);
     msg(ibyte == 2 ? OUT_ERRORS : OUT_IDS, "%02x ", val);
   } else {
     msg(OUT_SAMPLES, "<");
-    msg(OUT_HISTOGRAM, "(%02x)", clk);
+    msg(OUT_SAMPLES, "%02x/", clk);
     msg(OUT_HEX, "%02x", val);
     msg(OUT_SAMPLES, ">");
     msg(OUT_HEX, " ");
@@ -1249,7 +1384,13 @@ process_bit(int bit)
   if (ibyte >= 0) ibyte++;
   if (dbyte > 0) dbyte--;
   if (ebyte > 0) ebyte--;
-  crc = calc_crc1(crc, val);
+  crc = calc_crc1(crc, (curenc == HP_MMFM) ? bitswap(val) : val);
+
+#if DEBUG6
+  if (dbyte == 2) {
+    msg(OUT_HEX, "[expecting CRC %04x] ", crc);
+  }
+#endif
 
   if (dbyte == 0) {
     if (crc == 0) {
@@ -1303,7 +1444,8 @@ process_bit(int bit)
   }
 
   /* Predetect bad MFM clock pattern.  Can't detect at decode time
-     because we need to look at 17 bits. */
+     because we need to look at 17 bits.  XXX Fix this on main by
+     decoding from 1 or 2 bits below the top of accum? */
   if (curenc == MFM && bits == 48 && !mfm_valid_clock(accum >> 32)) {
     if (mfm_valid_clock(accum >> 31)) {
       msg(OUT_HEX, "(-1)");
@@ -1312,6 +1454,25 @@ process_bit(int bit)
       msg(OUT_HEX, "?");
     }
   }
+
+#if 0
+  // XXX This doesn't seem to help.  It fires a lot in gaps, but
+  // doesn't seem to clean things up noticeably.  The hope was that it
+  // would somehow help us sync up in the pre-DAM gap sooner, during
+  // the run of 00 before the 00 ff sync-up boundary.
+
+  /* Predetect bad MMFM clock pattern.  Can't detect at decode time
+     because we need to look at 18 bits. XXX Fix this by decoding from
+     2 bits below the top of accum?  See similar comment elsewhere,
+     where we print the "?" for MMFM */
+  if (curenc == HP_MMFM && bits == 48 && !mmfm_valid_clock(accum >> 32) &&
+      mark_after == -1) {
+    if (mmfm_valid_clock(accum >> 31)) {
+      msg(OUT_HEX, "(-1)");
+      bits--;
+    }
+  }
+#endif
 }
 
 
@@ -1343,7 +1504,7 @@ process_sample(int sample)
     } else if (sample + adj <= mfmthresh2) {
       /* Medium */
       len = 3;
-    } else if (uencoding != MMFM || sample + adj <= mmfmthresh3) {
+    } else if (uencoding != HP_MMFM || sample + adj <= mmfmthresh3) {
       /* Long */
       len = 4;
     } else {
@@ -2502,10 +2663,12 @@ main(int argc, char** argv)
   dmk_write_header(); // rewrite to pick up any detected changes
   msg(OUT_SUMMARY, "\nTotals:\n");
   msg(OUT_SUMMARY,
-      "%d good track%s, %d good sector%s (%d FM + %d MFM + %d RX02)\n",
+      "%d good track%s, %d good sector%s "
+      "(%d FM, %d MFM, %d RX02, %d HP MMFM)\n",
       good_tracks, plu(good_tracks),
       total_good_sectors, plu(total_good_sectors),
-      total_enc_count[FM], total_enc_count[MFM], total_enc_count[RX02]);
+      total_enc_count[FM], total_enc_count[MFM], total_enc_count[RX02],
+      total_enc_count[HP_MMFM]);
   msg(OUT_SUMMARY, "%d bad track%s, %d unrecovered error%s, %d retr%s\n",
       err_tracks, plu(err_tracks), total_errcount, plu(total_errcount),
       total_retries, (total_retries == 1) ? "y" : "ies");
